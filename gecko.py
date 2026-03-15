@@ -404,6 +404,11 @@ class Gecko:
                 lexer = None
 
             self.new_tab(title=Path(path).name, content=content, path=path, lexer=lexer)
+
+            if str(path).lower().endswith(('.py', '.go')):
+                if not self.mode_programmer.get():
+                    self.mode_programmer.set(True)
+                    self.toggle_mode()
         except Exception as e:
             messagebox.showerror("Error", f"Could not open file\n{e}")
 
@@ -461,9 +466,12 @@ class Gecko:
             return
         data = {"tabs": [], "recent_files": self.recent_files}
         for tab in self.tabs:
+            content = None
+            if not tab["path"] or tab["text"].edit_modified():
+                content = tab["text"].get("1.0", "end-1c")
             data["tabs"].append({
                 "path": str(tab["path"]) if tab["path"] else None,
-                "content": tab["text"].get("1.0", tk.END).rstrip() if not tab["path"] else None
+                "content": content
             })
         try:
             with open(self.state_path, "w", encoding="utf-8") as f:
@@ -472,17 +480,36 @@ class Gecko:
 
     def load_state(self):
         if not self.remember_state.get() or not self.state_path.exists(): return
+        should_be_programmer_mode = False
         try:
             with open(self.state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.recent_files = data.get("recent_files", [])
             self.update_recent_menu()
             for t in data.get("tabs", []):
-                if t.get("path") and Path(t["path"]).exists():
-                    with open(t["path"], "r", encoding="utf-8") as f:
-                        self.new_tab(title=Path(t["path"]).name, content=f.read(), path=t["path"])
-                elif t.get("content"):
-                    self.new_tab(content=t["content"])
+                path = t.get("path")
+                content = t.get("content")
+                if path and Path(path).exists():
+                    if str(path).lower().endswith(('.py', '.go')):
+                        should_be_programmer_mode = True
+                    try:
+                        lexer = get_lexer_for_filename(path, stripall=True)
+                    except ClassNotFound:
+                        lexer = None
+                    if content is not None:
+                        self.new_tab(title=Path(path).name, content=content, path=path, lexer=lexer)
+                        self.current_tab_data["text"].edit_modified(True)
+                        self.update_tab_title(self.current_tab_data)
+                    else:
+                        with open(path, "r", encoding="utf-8") as f:
+                            self.new_tab(title=Path(path).name, content=f.read(), path=path, lexer=lexer)
+                elif content:
+                    self.new_tab(content=content)
+                    self.current_tab_data["text"].edit_modified(True)
+                    self.update_tab_title(self.current_tab_data)
+
+            if should_be_programmer_mode:
+                self.mode_programmer.set(True)
         except: pass
 
     def on_close(self):
