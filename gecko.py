@@ -54,11 +54,42 @@ class Gecko:
         except:
             pass
 
+        # Create a simple 'X' image for the close button
+        self.close_img = tk.PhotoImage(width=14, height=14)
+        # Draw an X in light gray
+        for i in range(3, 11):
+            self.close_img.put("#aaaaaa", (i, i))
+            self.close_img.put("#aaaaaa", (i, 13-i))
+            self.close_img.put("#aaaaaa", (i+1, i))      # Thickens
+            self.close_img.put("#aaaaaa", (i+1, 13-i))   # Thicken
+
         style = ttk.Style()
         style.theme_use("default")
+        style.element_create("close", "image", self.close_img, border=0, sticky="")
+
         style.configure("Dark.TNotebook", background="#1e1e1e", bordercolor="#1e1e1e")
-        style.configure("Dark.TNotebook.Tab", background="#2d2d2d", foreground="#d4d4d4", padding=[8, 3])
+        style.configure("Dark.TNotebook.Tab", background="#2d2d2d", foreground="#d4d4d4", padding=[10, 2])
         style.map("Dark.TNotebook.Tab", background=[("selected", "#1e1e1e")], foreground=[("selected", "#ffffff")])
+
+        style.layout("Dark.TNotebook.Tab", [
+            ("Notebook.tab", {
+                "sticky": "nswe",
+                "children": [
+                    ("Notebook.padding", {
+                        "side": "top", "sticky": "nswe",
+                        "children": [
+                            ("Notebook.focus", {
+                                "side": "top", "sticky": "nswe",
+                                "children": [
+                                    ("Notebook.label", {"side": "left", "sticky": ""}),
+                                    ("Notebook.close", {"side": "left", "sticky": ""}),
+                                ]
+                            })
+                        ]
+                    })
+                ]
+            })
+        ])
 
         self.current_font_family = "Courier New"
         self.current_font_size = tk.IntVar(value=14)
@@ -78,6 +109,8 @@ class Gecko:
         self.notebook = ttk.Notebook(root, style="Dark.TNotebook")
         self.notebook.pack(fill="both", expand=True)
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+        self.notebook.bind("<Button-1>", self.on_tab_click)
+        self.notebook.bind("<Double-Button-1>", self.on_tab_double_click)
 
         self.status = tk.Frame(root, bg="#1e1e1e", bd=1, relief=tk.SUNKEN)
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
@@ -111,7 +144,7 @@ class Gecko:
         filemenu.add_command(label="Save", command=self.save_current, accelerator="Ctrl+S")
         filemenu.add_command(label="Save As...", command=self.save_as, accelerator="Ctrl+Shift+S")
         filemenu.add_separator()
-        filemenu.add_command(label="Close Tab", command=self.close_current_tab, accelerator="Ctrl+W")
+        filemenu.add_command(label="Close Tab", command=self.close_tab, accelerator="Ctrl+W")
 
         editmenu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="Edit", menu=editmenu)
@@ -154,7 +187,7 @@ class Gecko:
         self.root.bind("<Control-o>", lambda e: self.open_file())
         self.root.bind("<Control-s>", lambda e: self.save_current())
         self.root.bind("<Control-Shift-S>", lambda e: self.save_as())
-        self.root.bind("<Control-w>", lambda e: self.close_current_tab())
+        self.root.bind("<Control-w>", lambda e: self.close_tab())
         self.root.bind("<Control-f>", lambda e: self.find_replace_dialog())
         self.root.bind("<Control-plus>", lambda e: self.zoom_in())
         self.root.bind("<Control-equal>", lambda e: self.zoom_in())
@@ -390,19 +423,27 @@ class Gecko:
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
-    def close_current_tab(self):
-        if not self.current_tab_data: return
-        idx = self.notebook.index("current")
-        if self.current_tab_data["text"].edit_modified():
-            if not messagebox.askyesno("Unsaved Changes", "Close anyway?"):
+    def close_tab(self, index=None):
+        if index is None:
+            if not self.tabs: return
+            index = self.notebook.index("current")
+        
+        if index < 0 or index >= len(self.tabs):
+            return
+
+        tab_to_close = self.tabs[index]
+        
+        if tab_to_close["text"].edit_modified():
+            self.notebook.select(index) # Show tab to user
+            if not messagebox.askyesno("Unsaved Changes", f"Close '{tab_to_close['title']}' without saving?"):
                 return
-        self.notebook.forget(idx)
-        self.tabs.pop(idx)
-        if self.tabs:
-            self.notebook.select(self.tabs[-1]["frame"])
-            self.current_tab_data = self.tabs[-1]
-        else:
+
+        self.notebook.forget(index)
+        self.tabs.pop(index)
+        
+        if not self.tabs:
             self.new_tab()
+        # If tabs remain, notebook automatically selects the next appropriate one
 
     def save_state(self):
         if not self.remember_state.get():
@@ -503,6 +544,18 @@ class Gecko:
                 self.open_path(f)
         except Exception as e:
             messagebox.showerror("Drop Error", f"Could not handle dropped file(s):\n{e}")
+
+    def on_tab_click(self, event):
+        try:
+            if self.notebook.identify(event.x, event.y) == "close":
+                index = self.notebook.index(f"@{event.x},{event.y}")
+                self.close_tab(index)
+        except tk.TclError:
+            pass
+
+    def on_tab_double_click(self, event):
+        if not self.notebook.identify(event.x, event.y):
+            self.new_tab()
 
     def find_replace_dialog(self):
         if not self.current_tab_data:
