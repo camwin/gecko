@@ -5,7 +5,8 @@
 # green text + green cursor + Courier New (classic terminal font)
 # mascot: Gecko (Mediterranean house gecko lifestyle)
 # modes: Standard (default) / Programmer (coords, syntax highlight, line numbers)
-# line numbers: perfectly aligned, no top offset, no duplication on zoom
+# find/replace: single dialog, replace optional, match case toggle
+# auto-highlight matches on selection (yellow)
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, Toplevel, Checkbutton, BooleanVar, Entry, Label, Button, StringVar
@@ -13,6 +14,12 @@ import os
 import json
 from pathlib import Path
 import platform
+from pygments import lex
+from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
+from pygments.styles import get_style_by_name
+from pygments.util import ClassNotFound
+from pygments.token import Text as PygmentsText
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 def get_state_path():
     app_name = "Gecko"
@@ -58,6 +65,12 @@ class Gecko:
         self.word_wrap = tk.BooleanVar(value=True)
         self.remember_state = tk.BooleanVar(value=True)
         self.mode_programmer = tk.BooleanVar(value=False)  # default Standard
+        self.current_syntax_var = tk.StringVar(value="Plain Text")
+
+        # Pygments setup
+        self.pygments_style_name = 'monokai'
+        self.pygments_style = get_style_by_name(self.pygments_style_name)
+        self.default_fg = self.pygments_style.style_for_token(PygmentsText).get('color') or "d4d4d4"
 
         self.tabs = []
         self.current_tab_data = None
@@ -66,8 +79,12 @@ class Gecko:
         self.notebook.pack(fill="both", expand=True)
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
 
-        self.status = tk.Label(root, text="Ln 1, Col 1", bd=1, relief=tk.SUNKEN, anchor=tk.W,
-                               bg="#1e1e1e", fg="#00ff00")
+        self.status = tk.Frame(root, bg="#1e1e1e", bd=1, relief=tk.SUNKEN)
+        self.status.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_cursor = tk.Label(self.status, text="Ln 1, Col 1", bg="#1e1e1e", fg="#00ff00", anchor=tk.W)
+        self.status_cursor.pack(side=tk.LEFT, padx=5)
+        self.status_syntax = tk.Label(self.status, text="Plain Text", bg="#1e1e1e", fg="#00ff00", anchor=tk.E)
+        self.status_syntax.pack(side=tk.RIGHT, padx=5)
 
         self.setup_menu()
         self.setup_shortcuts()
@@ -84,11 +101,11 @@ class Gecko:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def setup_menu(self):
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
 
-        filemenu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=filemenu)
+        filemenu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="File", menu=filemenu)
         filemenu.add_command(label="New Tab", command=self.new_tab, accelerator="Ctrl+T")
         filemenu.add_command(label="Open...", command=self.open_file, accelerator="Ctrl+O")
         filemenu.add_command(label="Save", command=self.save_current, accelerator="Ctrl+S")
@@ -96,20 +113,35 @@ class Gecko:
         filemenu.add_separator()
         filemenu.add_command(label="Close Tab", command=self.close_current_tab, accelerator="Ctrl+W")
 
-        editmenu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Edit", menu=editmenu)
+        editmenu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Edit", menu=editmenu)
         editmenu.add_command(label="Undo", command=lambda: self.get_current_text().edit_undo() if self.get_current_text() else None, accelerator="Ctrl+Z")
         editmenu.add_command(label="Redo", command=lambda: self.get_current_text().edit_redo() if self.get_current_text() else None, accelerator="Ctrl+Y")
         editmenu.add_command(label="Find / Replace", command=self.find_replace_dialog, accelerator="Ctrl+F")
 
-        viewmenu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="View", menu=viewmenu)
+        viewmenu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="View", menu=viewmenu)
         viewmenu.add_command(label="Zoom In", command=self.zoom_in, accelerator="Ctrl++")
         viewmenu.add_command(label="Zoom Out", command=self.zoom_out, accelerator="Ctrl+-")
         viewmenu.add_checkbutton(label="Word Wrap", variable=self.word_wrap, command=self.update_wrap)
 
-        optionsmenu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Options", menu=optionsmenu)
+        self.syntaxmenu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Syntax", menu=self.syntaxmenu)
+        self.syntaxmenu.add_radiobutton(label="Plain Text", variable=self.current_syntax_var, value="Plain Text", command=lambda: self.set_current_tab_lexer('plaintext'))
+        self.syntaxmenu.add_command(label="Auto-detect", command=lambda: self.set_current_tab_lexer('auto'))
+        self.syntaxmenu.add_separator()
+
+        common_languages = ['Python', 'JavaScript', 'HTML', 'CSS', 'JSON', 'SQL', 'XML', 'Markdown', 'YAML', 'Bash']
+        for lang in sorted(common_languages):
+            try:
+                lexer_info = get_lexer_by_name(lang.lower())
+                alias = lexer_info.aliases[0]
+                self.syntaxmenu.add_radiobutton(label=lang, variable=self.current_syntax_var, value=lang, command=lambda a=alias: self.set_current_tab_lexer(a))
+            except ClassNotFound:
+                continue
+
+        optionsmenu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Options", menu=optionsmenu)
         optionsmenu.add_checkbutton(label="Remember last session",
                                     variable=self.remember_state,
                                     command=self.save_state)
@@ -128,53 +160,52 @@ class Gecko:
         self.root.bind("<Control-equal>", lambda e: self.zoom_in())
         self.root.bind("<Control-minus>", lambda e: self.zoom_out())
 
+        self.root.drop_target_register(DND_FILES)
+        self.root.dnd_bind('<<Drop>>', self.on_drop)
+
     def toggle_mode(self):
         is_programmer = self.mode_programmer.get()
+
+        try:
+            self.menubar.index("Syntax")
+            has_syntax = True
+        except tk.TclError:
+            has_syntax = False
+
         if is_programmer:
+            if not has_syntax:
+                try:
+                    self.menubar.insert_cascade("Options", label="Syntax", menu=self.syntaxmenu)
+                except tk.TclError:
+                    self.menubar.add_cascade(label="Syntax", menu=self.syntaxmenu)
             self.status.pack(side=tk.BOTTOM, fill=tk.X)
-            for tab in self.tabs:
-                tab["text"].tag_configure("keyword", foreground="#ff5555")
-                tab["text"].tag_configure("string", foreground="#ffff88")
-                tab["text"].tag_configure("comment", foreground="#88ff88")
-                self.apply_syntax_highlight(tab["text"])
-                tab["text"].bind("<<Modified>>", lambda e, t=tab["text"]: self.apply_syntax_highlight(t))
-                # Line numbers - rebuilt on zoom, flush alignment
-                if "line_num" in tab:
-                    tab["line_num"].destroy()
-                line_num = tk.Text(tab["frame"], width=5, padx=3, takefocus=0, border=0,
-                                   background="#1e1e1e", foreground="#666666", state="disabled",
-                                   font=(self.current_font_family, self.current_font_size.get()),
-                                   spacing1=0, spacing2=0, spacing3=0)
-                line_num.pack(side=tk.LEFT, fill=tk.Y, before=tab["text"])
-                line_num.insert("1.0", "\n".join(str(i) for i in range(1, int(tab["text"].index("end-1c").split(".")[0]) + 1)))
-                line_num.config(state="disabled")
-                tab["line_num"] = line_num
-                self.sync_line_numbers(tab["text"], line_num)
-                # Scroll sync
-                def sync_scroll(*args):
-                    line_num.yview(*args)
-                tab["text"]['yscrollcommand'] = sync_scroll
-                line_num['yscrollcommand'] = lambda first, last: tab["text"].yview_moveto(first)
-                tab["text"].bind("<Configure>", lambda e, t=tab["text"], ln=line_num: self.sync_line_numbers(t, ln))
-                tab["text"].bind("<MouseWheel>", lambda e, t=tab["text"], ln=line_num: self.sync_line_numbers(t, ln))
-                tab["text"].bind("<KeyRelease>", lambda e, t=tab["text"], ln=line_num: self.sync_line_numbers(t, ln))
         else:
+            if has_syntax:
+                self.menubar.delete("Syntax")
             self.status.pack_forget()
-            for tab in self.tabs:
-                tab["text"].tag_remove("keyword", "1.0", tk.END)
-                tab["text"].tag_remove("string", "1.0", tk.END)
-                tab["text"].tag_remove("comment", "1.0", tk.END)
-                tab["text"].unbind("<<Modified>>")
+
+        for tab in self.tabs:
+            if is_programmer:
+                if "line_num" not in tab:
+                    line_num = tk.Text(tab["frame"], width=5, padx=3, takefocus=0, border=0,
+                                       background="#1e1e1e", foreground="#666666", state="disabled",
+                                       font=(self.current_font_family, self.current_font_size.get()),
+                                       spacing1=0, spacing2=0, spacing3=0, pady=15)
+                    tab["line_num"] = line_num
+                    tab["text"].bind("<Configure>", lambda e, t=tab["text"], ln=tab["line_num"]: self.sync_line_numbers(t, ln), add='+')
+                    tab["text"].bind("<KeyRelease>", lambda e, t=tab["text"], ln=tab["line_num"]: self.sync_line_numbers(t, ln), add='+')
+                    tab["text"].bind("<MouseWheel>", lambda e, t=tab["text"], ln=tab["line_num"]: self.sync_line_numbers(t, ln), add='+')
+
+                tab["line_num"].pack(side=tk.LEFT, fill=tk.Y, before=tab["text"])
+                self.sync_line_numbers(tab["text"], tab["line_num"])
+                self.apply_pygments_highlight(tab)
+            else:
                 if "line_num" in tab:
-                    tab["line_num"].destroy()
-                    del tab["line_num"]
-                tab["text"].unbind("<Configure>")
-                tab["text"].unbind("<MouseWheel>")
-                tab["text"].unbind("<KeyRelease>")
-                if hasattr(tab["text"], 'yscrollcommand'):
-                    tab["text"]['yscrollcommand'] = None
+                    tab["line_num"].pack_forget()
+                self._clear_highlighting(tab)
 
     def sync_line_numbers(self, text_widget, line_num_widget):
+        line_num_widget.configure(font=(self.current_font_family, self.current_font_size.get()))
         line_num_widget.config(state="normal")
         line_num_widget.delete("1.0", tk.END)
         line_count = int(text_widget.index("end-1c").split(".")[0])
@@ -182,44 +213,6 @@ class Gecko:
         yview = text_widget.yview()
         line_num_widget.yview_moveto(yview[0])
         line_num_widget.config(state="disabled")
-
-    def apply_syntax_highlight(self, text_widget):
-        content = text_widget.get("1.0", tk.END)
-        text_widget.tag_remove("keyword", "1.0", tk.END)
-        text_widget.tag_remove("string", "1.0", tk.END)
-        text_widget.tag_remove("comment", "1.0", tk.END)
-
-        keywords = ["def", "class", "import", "from", "if", "else", "elif", "for", "while", "return", "True", "False", "None"]
-        for kw in keywords:
-            start = "1.0"
-            while True:
-                pos = text_widget.search(kw, start, stopindex=tk.END, regexp=True, exact=True)
-                if not pos: break
-                end = f"{pos}+{len(kw)}c"
-                text_widget.tag_add("keyword", pos, end)
-                start = end
-
-        for quote in ['"', "'"]:
-            start = "1.0"
-            while True:
-                pos = text_widget.search(quote, start, stopindex=tk.END)
-                if not pos: break
-                end = text_widget.search(quote, f"{pos}+1c", stopindex=tk.END)
-                if end:
-                    end = f"{end}+1c"
-                else:
-                    end = tk.END
-                text_widget.tag_add("string", pos, end)
-                start = end
-
-        start = "1.0"
-        while True:
-            pos = text_widget.search("#", start, stopindex=tk.END)
-            if not pos: break
-            end = text_widget.search("\n", pos, stopindex=tk.END)
-            if not end: end = tk.END
-            text_widget.tag_add("comment", pos, end)
-            start = end
 
     def get_current_text(self):
         return self.current_tab_data["text"] if self.current_tab_data else None
@@ -230,24 +223,31 @@ class Gecko:
         text = self.current_tab_data["text"]
         pos = text.index("insert")
         line, col = pos.split('.')
-        self.status.config(text=f"Ln {line}, Col {int(col)+1}")
+        self.status_cursor.config(text=f"Ln {line}, Col {int(col)+1}")
 
-    def new_tab(self, title="Untitled", content="", path=None):
+    def new_tab(self, title="Untitled", content="", path=None, lexer=None):
         tab_frame = tk.Frame(self.notebook, bg="#1e1e1e")
         text_widget = tk.Text(tab_frame,
                               wrap=tk.WORD if self.word_wrap.get() else tk.NONE,
                               font=(self.current_font_family, self.current_font_size.get()),
                               undo=True,
                               bg="#1e1e1e",
-                              fg="#00ff00",
+                              fg=f"#{self.default_fg}",
                               insertbackground="#00ff00",
                               insertwidth=5,
                               padx=15, pady=15)
-        text_widget.pack(side=tk.LEFT, fill="both", expand=True)
+        text_widget.pack(fill="both", expand=True)
 
         self.notebook.add(tab_frame, text=title)
 
-        tab_info = {"frame": tab_frame, "text": text_widget, "path": path, "title": title}
+        # Configure pygments tags for this widget
+        for token, style in self.pygments_style:
+            tag_name = f"pyg_{str(token)}"
+            fg = style.get('color')
+            if fg:
+                text_widget.tag_configure(tag_name, foreground=f"#{fg}")
+
+        tab_info = {"frame": tab_frame, "text": text_widget, "path": path, "title": title, "lexer": lexer, "highlight_job": None}
         self.tabs.append(tab_info)
         self.notebook.select(tab_frame)
         self.current_tab_data = tab_info
@@ -267,9 +267,38 @@ class Gecko:
 
         text_widget.bind("<KeyRelease>", lambda e: self.update_cursor_position())
         text_widget.bind("<ButtonRelease-1>", lambda e: self.update_cursor_position())
-        text_widget.bind("<<Modified>>", lambda e: self.update_tab_title(tab_info))
+        text_widget.bind("<<Modified>>", lambda e, t=tab_info: (self.update_tab_title(t), self.schedule_highlight(t)))
+
+        # Auto-highlight on selection
+        text_widget.bind("<<Selection>>", lambda e, t=text_widget: self.auto_highlight_matches(t))
 
         self.toggle_mode()
+
+    def auto_highlight_matches(self, text_widget):
+        text_widget.tag_remove("auto_match", "1.0", tk.END)
+
+        try:
+            sel_start = text_widget.index("sel.first")
+            sel_end = text_widget.index("sel.last")
+            selected_text = text_widget.get(sel_start, sel_end).strip()
+            if not selected_text or len(selected_text) < 2:
+                return
+
+            start_pos = "1.0"
+            while True:
+                pos = text_widget.search(selected_text, start_pos, stopindex=tk.END, nocase=True, exact=True)
+                if not pos:
+                    break
+                end_pos = f"{pos}+{len(selected_text)}c"
+                if pos == sel_start:
+                    start_pos = end_pos
+                    continue
+                text_widget.tag_add("auto_match", pos, end_pos)
+                start_pos = end_pos
+
+            text_widget.tag_config("auto_match", background="#444400", foreground="#ffff88")
+        except tk.TclError:
+            pass
 
     def on_tab_changed(self, event):
         selected = self.notebook.select()
@@ -284,6 +313,7 @@ class Gecko:
                     self.update_cursor_position()
                 self.root.after(0, force_focus)
                 self.root.after(10, force_focus)
+                self.update_syntax_ui()
                 break
 
     def update_tab_title(self, tab):
@@ -295,7 +325,7 @@ class Gecko:
         self.current_font_size.set(self.current_font_size.get() + 1)
         for tab in self.tabs:
             tab["text"].configure(font=(self.current_font_family, self.current_font_size.get()))
-        self.toggle_mode()  # Rebuild line numbers & highlight
+        self.toggle_mode()
 
     def zoom_out(self):
         if self.current_font_size.get() > 6:
@@ -312,12 +342,29 @@ class Gecko:
     def open_file(self):
         path = filedialog.askopenfilename(filetypes=[("All files", "*.*"), ("Text", "*.txt"), ("Python", "*.py")])
         if path:
+            self.open_path(path)
+
+    def open_path(self, path):
+        if not path or not os.path.isfile(path):
+            return
+
+        # Check if file is already open
+        for tab in self.tabs:
+            if tab["path"] and Path(tab["path"]).resolve() == Path(path).resolve():
+                self.notebook.select(tab["frame"])
+                return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                self.new_tab(title=Path(path).name, content=content, path=path)
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not open\n{e}")
+                lexer = get_lexer_for_filename(path, stripall=True)
+            except ClassNotFound:
+                lexer = None
+
+            self.new_tab(title=Path(path).name, content=content, path=path, lexer=lexer)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open file\n{e}")
 
     def save_current(self):
         if not self.current_tab_data: return
@@ -389,6 +436,73 @@ class Gecko:
     def on_close(self):
         self.save_state()
         self.root.destroy()
+
+    def set_current_tab_lexer(self, lexer_name):
+        if not self.current_tab_data:
+            return
+
+        lexer = None
+        try:
+            if lexer_name == 'auto':
+                if self.current_tab_data.get('path'):
+                    lexer = get_lexer_for_filename(self.current_tab_data['path'], stripall=True)
+            elif lexer_name != 'plaintext':
+                lexer = get_lexer_by_name(lexer_name, stripall=True)
+        except ClassNotFound:
+            lexer = None
+
+        self.current_tab_data['lexer'] = lexer
+        self.apply_pygments_highlight(self.current_tab_data)
+        self.update_syntax_ui()
+
+    def update_syntax_ui(self):
+        if not self.current_tab_data: return
+        lexer = self.current_tab_data.get("lexer")
+        name = lexer.name if lexer else "Plain Text"
+        self.current_syntax_var.set(name)
+        self.status_syntax.config(text=name)
+
+    def schedule_highlight(self, tab_info):
+        if not self.mode_programmer.get():
+            return
+        if tab_info.get("highlight_job"):
+            self.root.after_cancel(tab_info["highlight_job"])
+        tab_info["highlight_job"] = self.root.after(300, lambda: self.apply_pygments_highlight(tab_info))
+
+    def apply_pygments_highlight(self, tab_info):
+        if not self.mode_programmer.get() or not tab_info or not tab_info.get('lexer'):
+            self._clear_highlighting(tab_info)
+            return
+
+        text_widget = tab_info["text"]
+        lexer = tab_info["lexer"]
+        content = text_widget.get("1.0", tk.END)
+
+        self._clear_highlighting(tab_info)
+
+        start_index = "1.0"
+        for token, text in lex(content, lexer):
+            end_index = f"{start_index}+{len(text)}c"
+            tag_name = f"pyg_{str(token)}"
+            # Only add the tag if it's been configured (i.e., has a color)
+            if text_widget.tag_cget(tag_name, "foreground"):
+                text_widget.tag_add(tag_name, start_index, end_index)
+            start_index = end_index
+
+    def _clear_highlighting(self, tab_info):
+        if not tab_info: return
+        text_widget = tab_info["text"]
+        for tag in text_widget.tag_names():
+            if tag.startswith("pyg_"):
+                text_widget.tag_remove(tag, "1.0", tk.END)
+
+    def on_drop(self, event):
+        try:
+            files = self.root.tk.splitlist(event.data)
+            for f in files:
+                self.open_path(f)
+        except Exception as e:
+            messagebox.showerror("Drop Error", f"Could not handle dropped file(s):\n{e}")
 
     def find_replace_dialog(self):
         if not self.current_tab_data:
@@ -471,6 +585,6 @@ class Gecko:
         messagebox.showinfo("Replace", f"Replaced {count} occurrences.")
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
     app = Gecko(root)
     root.mainloop()
