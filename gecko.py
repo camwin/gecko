@@ -185,6 +185,10 @@ class Gecko:
                                     variable=self.mode_programmer,
                                     command=self.toggle_mode)
 
+        helpmenu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Help", menu=helpmenu)
+        helpmenu.add_command(label="About", command=self.show_about)
+
     def setup_shortcuts(self):
         self.root.bind("<Control-t>", lambda e: self.new_tab())
         self.root.bind("<Control-o>", lambda e: self.open_file())
@@ -615,6 +619,13 @@ class Gecko:
     def on_tab_double_click(self, event):
         if not self.notebook.identify(event.x, event.y):
             self.new_tab()
+
+    def show_about(self):
+        messagebox.showinfo("About Gecko",
+                            "Gecko Text Editor\n"
+                            "Version 1.0\n\n"
+                            "A lightweight, programmer-friendly text editor.\n\n"
+                            "github.com/camwin/gecko")
 
     def find_replace_dialog(self):
         if not self.current_tab_data:
