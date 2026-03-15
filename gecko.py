@@ -97,6 +97,7 @@ class Gecko:
         self.remember_state = tk.BooleanVar(value=True)
         self.mode_programmer = tk.BooleanVar(value=False)  # default Standard
         self.current_syntax_var = tk.StringVar(value="Plain Text")
+        self.recent_files = []
 
         # Pygments setup
         self.pygments_style_name = 'monokai'
@@ -141,6 +142,8 @@ class Gecko:
         self.menubar.add_cascade(label="File", menu=filemenu)
         filemenu.add_command(label="New Tab", command=self.new_tab, accelerator="Ctrl+T")
         filemenu.add_command(label="Open...", command=self.open_file, accelerator="Ctrl+O")
+        self.recent_menu = tk.Menu(filemenu, tearoff=0)
+        filemenu.add_cascade(label="Open Recent", menu=self.recent_menu)
         filemenu.add_command(label="Save", command=self.save_current, accelerator="Ctrl+S")
         filemenu.add_command(label="Save As...", command=self.save_as, accelerator="Ctrl+Shift+S")
         filemenu.add_separator()
@@ -379,7 +382,12 @@ class Gecko:
 
     def open_path(self, path):
         if not path or not os.path.isfile(path):
+            if path in self.recent_files:
+                self.recent_files.remove(path)
+                self.update_recent_menu()
             return
+
+        self.add_to_recent(path)
 
         # Check if file is already open
         for tab in self.tabs:
@@ -420,6 +428,7 @@ class Gecko:
                 f.write(content)
             self.current_tab_data["text"].edit_modified(False)
             self.update_tab_title(self.current_tab_data)
+            self.add_to_recent(path)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
@@ -450,7 +459,7 @@ class Gecko:
             if self.state_path.exists():
                 self.state_path.unlink()
             return
-        data = {"tabs": []}
+        data = {"tabs": [], "recent_files": self.recent_files}
         for tab in self.tabs:
             data["tabs"].append({
                 "path": str(tab["path"]) if tab["path"] else None,
@@ -466,6 +475,8 @@ class Gecko:
         try:
             with open(self.state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            self.recent_files = data.get("recent_files", [])
+            self.update_recent_menu()
             for t in data.get("tabs", []):
                 if t.get("path") and Path(t["path"]).exists():
                     with open(t["path"], "r", encoding="utf-8") as f:
@@ -477,6 +488,27 @@ class Gecko:
     def on_close(self):
         self.save_state()
         self.root.destroy()
+
+    def add_to_recent(self, path):
+        if not path: return
+        path = str(Path(path).resolve())
+        if path in self.recent_files:
+            self.recent_files.remove(path)
+        self.recent_files.insert(0, path)
+        self.recent_files = self.recent_files[:10]
+        self.update_recent_menu()
+
+    def update_recent_menu(self):
+        self.recent_menu.delete(0, tk.END)
+        for path in self.recent_files:
+            self.recent_menu.add_command(label=path, command=lambda p=path: self.open_path(p))
+        if self.recent_files:
+            self.recent_menu.add_separator()
+            self.recent_menu.add_command(label="Clear Recently Opened", command=self.clear_recent)
+
+    def clear_recent(self):
+        self.recent_files = []
+        self.update_recent_menu()
 
     def set_current_tab_lexer(self, lexer_name):
         if not self.current_tab_data:
